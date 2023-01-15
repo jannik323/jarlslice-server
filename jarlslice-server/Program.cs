@@ -1,4 +1,6 @@
 ﻿using System;
+using System.IO;
+using System.Timers;
 using System.Threading;
 using RiptideNetworking;
 using RiptideNetworking.Utils;
@@ -62,6 +64,9 @@ public class NetworkManager {
                     case "msgT":
                         ntwrk.msgOnTouch = true;
                         break;
+                    case "cLevel":
+                        ntwrk.customLevel = true;
+                        break;
                 }
             }
         }
@@ -74,8 +79,6 @@ public class NetworkManager {
     private ushort port = 33333;
     private ushort maxPlayers = 20;
 
-    private ushort CurrentTick = 0;
-    private ushort sendRate = 100;
     public int maxUsernameLength { get; private set; } = 20;
     public int maxTextMessageLength { get; private set; } = 100;
 
@@ -83,8 +86,14 @@ public class NetworkManager {
     public bool msgonLevelFinish = false;
     public bool canPlayerColorSelect = false;
     public bool canPlayerCollide= false;
+    public bool customLevel= false;
 	
     public bool isRunning =true;
+
+    public Dictionary<string, bool> collDict = new Dictionary<string, bool>();
+
+    public List<string> customLevelStrings = new List<string>();
+
     public NetworkManager() {
         Singleton = this;
         Server = new Server();
@@ -96,6 +105,20 @@ public class NetworkManager {
         Console.Out.WriteLine("Player Collision: " + canPlayerCollide.ToString());
         Console.Out.WriteLine("Msg On Touch: " + msgOnTouch.ToString());
         Console.Out.WriteLine("Msg On Finish: " + msgonLevelFinish.ToString());
+        Console.Out.WriteLine("Custom Level: " + customLevel.ToString());
+
+        if (customLevel) {
+            Console.Write("Enter custom level path:");
+            string relativePath = Console.ReadLine();
+            IEnumerable<string> filestream =  File.ReadLines(relativePath);
+            if (filestream == null) {
+                Console.WriteLine("Could not find :"+ relativePath);
+            } else {
+                foreach (string line in filestream){  
+                    customLevelStrings.Add(line);
+                } 
+            }
+        }
 
         Server.Start(port, maxPlayers);
         Console.Out.WriteLine("");
@@ -105,27 +128,107 @@ public class NetworkManager {
         
         RiptideLogger.Initialize(Console.Out.WriteLine, true);
         Thread t =new Thread(new ThreadStart(NetUpdate));
-	t.Start();
+	    t.Start();
 	
-	Console.WriteLine("Press enter to stop the server at any time.");
-	Console.ReadLine();
-	isRunning=false;
-	t.Join();
-	Server.Stop();
+	    Console.WriteLine("Enter \"quit\" to exit at any time.");
+	    Console.WriteLine("Enter \"help\" for more infos.\n");
 
+        while (isRunning) {
+            parseCommand(Console.ReadLine());
+        }
+	    t.Join();
+	    Server.Stop();
+    }
+
+    private void parseCommand(string input){
+        string[] stringcommand = input.Split(' ');
+        switch(stringcommand[0]){
+            case "quit":
+                isRunning=false;   
+                break;
+            case "kick":
+                if(stringcommand.Length<2)break;
+                Server.DisconnectClient(ushort.Parse(stringcommand[1]));
+                break;
+            case "players":
+                Console.WriteLine("connected : ("+Server.ClientCount+")");
+                foreach (Player player in Player.list.Values){
+                    Console.WriteLine("ID:"+player.Id+ "\t "+player.username);
+                }
+                break;
+            case "help":
+                Console.WriteLine("Commands : ");
+                Console.WriteLine("quit: exit the program.");
+                Console.WriteLine("help: display this text.");
+                Console.WriteLine("kick (id): kick a player with specified id.");
+                Console.WriteLine("players: list all current players.");
+                Console.WriteLine("playercolor (id) (r) (g) (b) [(a)]: change color of specified player by id.");
+                break;
+            case "playercolor":
+                if(stringcommand.Length<5)break;
+                Message newmessage = Message.Create(MessageSendMode.reliable, (ushort)ServerToPlayerId.ColorChange);
+                newmessage.AddUShort(ushort.Parse(stringcommand[1]));
+                if(stringcommand.Length==5){
+                    newmessage.AddColor(new Color(float.Parse(stringcommand[2]),float.Parse(stringcommand[3]),float.Parse(stringcommand[4]),0.5f));
+                } else {
+                    newmessage.AddColor(new Color(float.Parse(stringcommand[2]),float.Parse(stringcommand[3]),float.Parse(stringcommand[4]),float.Parse(stringcommand[5])));
+                }
+                NetworkManager.Singleton.Server.SendToAll(newmessage);
+                break;
+            case "msg":
+                if(stringcommand.Length<2)break;
+                SendTextMessage(stringcommand[1], true);
+                break;
+            default:
+                Console.WriteLine("Command not found, use \"help\" for more info.");
+                break;
+        }
+        Console.WriteLine();
     }
 
     private void Server_ClientDisconnected(object sender, ClientDisconnectedEventArgs e) {
         Player.Remove(e.Id);
     }
 
-    void NetUpdate() {
+    private void NetUpdate() {
+        System.Timers.Timer checktouchTimer = new System.Timers.Timer(500);
+        checktouchTimer.Elapsed+=checkTouch;
+        checktouchTimer.AutoReset=true;
+        if (msgOnTouch) {
+            checktouchTimer.Start();
+        }
+
         while (isRunning) {
             Server.Tick();
-	    SendPositions();
-	    Thread.Sleep(10);	       
-	}
+	        SendPositions();
+	        Thread.Sleep(16);	       
+	    }
+
+        checktouchTimer.Stop();
+        checktouchTimer.Dispose();
     }
+
+    private void checkTouch(Object source, ElapsedEventArgs e) {
+        if(Player.list.Count<2)return;
+        foreach (Player player1 in Player.list.Values) {
+            if(player1.scene=="Menu")continue;
+            foreach (Player player2 in Player.list.Values) {
+                if(player1==player2)continue;
+                if ( player2.scene!="Menu" && player1.scene == player2.scene && Vector3.Distance(player1.transform.position, player2.transform.position)<1.2f) {
+                    if (!collDict[player1.Id.ToString() + player2.Id.ToString()]) {
+                        SendTextMessage(player1.username+ " has touched "+ player2.username+ " !",true);
+                    }
+                    collDict[player1.Id.ToString()+player2.Id.ToString()]=true;
+                    collDict[player2.Id.ToString()+player1.Id.ToString()]=true;
+
+                } else {
+                    collDict[player2.Id.ToString()+player1.Id.ToString()]=true;
+                    collDict[player2.Id.ToString()+player1.Id.ToString()]=false;
+                }
+            }
+        }
+    }
+
     private void SendPositions() {
         foreach (Player player in Player.list.Values) {
             Message message = Message.Create(MessageSendMode.unreliable, (ushort)ServerToPlayerId.PlayerPosition);
@@ -196,6 +299,7 @@ public class NetworkManager {
 
         NetworkManager.Singleton.SendHostSetting(HostSetting.canPlayerChangeColor, NetworkManager.Singleton.canPlayerColorSelect);
         NetworkManager.Singleton.SendHostSetting(HostSetting.canPlayerCollide, NetworkManager.Singleton.canPlayerCollide);
+        NetworkManager.Singleton.Server.Send(NetworkManager.Singleton.CreateCurrentLevelStringMessage(),fromClientId);
     }
 
     [MessageHandler((ushort)ClientToServerId.NameChange)]
@@ -249,5 +353,33 @@ public class NetworkManager {
         Player.getUser(fromClientId).setColor(color);
         NetworkManager.Singleton.Server.SendToAll(newmessage, fromClientId);
     }
+
+    //custom level
+
+    [MessageHandler((ushort)ClientToServerId.RequestCustomLevel)]
+    private static void PlayerRequestCustomLevel(ushort fromClientId, Message message){
+        int index = message.GetInt();
+        NetworkManager.Singleton.Server.Send(NetworkManager.Singleton.CreateCurrentLevelStringMessage(index,15),fromClientId);
+    }
+
+    public Message CreateCurrentLevelStringMessage(int index= 0, ushort maxLines = 1){
+        Message message = Message.Create(MessageSendMode.reliable, (ushort)ServerToPlayerId.CustomLevel);
+        message.AddInt(index);
+        List<string> messageLines = new List<string>();
+        while(messageLines.Count<maxLines&&(index+messageLines.Count)<customLevelStrings.Count){
+            messageLines.Add(customLevelStrings[index+messageLines.Count]);
+            if(message.WrittenLength+((index+messageLines.Count+1<customLevelStrings.Count)?(customLevelStrings[index+messageLines.Count+1].Length):0)+40>=Message.MaxMessageSize)break;
+        }
+        message.AddInt(messageLines.Count);
+        message.AddInt(customLevelStrings.Count);
+        message.AddBool((index+messageLines.Count)>=customLevelStrings.Count);
+        message.AddBool(maxLines==1);
+        message.AddBool(false);
+        foreach(string line in messageLines){
+            message.AddString(line);
+        }
+        return message;
+    }
+
 }
 
