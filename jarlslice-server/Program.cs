@@ -75,7 +75,7 @@ public class NetworkManager {
     private ushort maxPlayers = 20;
 
     private ushort CurrentTick = 0;
-    private ushort sendRate = 10;
+    private ushort sendRate = 100;
     public int maxUsernameLength { get; private set; } = 20;
     public int maxTextMessageLength { get; private set; } = 100;
 
@@ -83,6 +83,8 @@ public class NetworkManager {
     public bool msgonLevelFinish = false;
     public bool canPlayerColorSelect = false;
     public bool canPlayerCollide= false;
+	
+    public bool isRunning =true;
     public NetworkManager() {
         Singleton = this;
         Server = new Server();
@@ -102,7 +104,15 @@ public class NetworkManager {
         Server.ClientDisconnected += Server_ClientDisconnected;
         
         RiptideLogger.Initialize(Console.Out.WriteLine, true);
-        NetUpdate();
+        Thread t =new Thread(new ThreadStart(NetUpdate));
+	t.Start();
+	
+	Console.WriteLine("Press enter to stop the server at any time.");
+	Console.ReadLine();
+	isRunning=false;
+	t.Join();
+	Server.Stop();
+
     }
 
     private void Server_ClientDisconnected(object sender, ClientDisconnectedEventArgs e) {
@@ -110,13 +120,11 @@ public class NetworkManager {
     }
 
     void NetUpdate() {
-        while (true) {
+        while (isRunning) {
             Server.Tick();
-            if (CurrentTick % sendRate == 0) {
-                SendPositions();
-            }
-            CurrentTick++;
-        }
+	    SendPositions();
+	    Thread.Sleep(10);	       
+	}
     }
     private void SendPositions() {
         foreach (Player player in Player.list.Values) {
